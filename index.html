@@ -39,155 +39,96 @@
     let lastByteTime = 0;
 
     async function startListening() {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaStreamSource(stream);
-      const analyser = audioCtx.createAnalyser();
+      // Check for AudioContext support
+      if (!window.AudioContext && !window.webkitAudioContext) {
+          alert('Web Audio API is not supported in this browser.');
+          return;
+      }
+      
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
 
-      analyser.fftSize = 2048;
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
+        analyser.fftSize = 2048;
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
 
-      source.connect(analyser);
+        source.connect(analyser);
 
-      function getDominantFrequency() {
-        analyser.getByteFrequencyData(dataArray);
-        let maxIndex = 0;
-        for (let i = 1; i < bufferLength; i++) {
-          if (dataArray[i] > dataArray[maxIndex]) {
-            maxIndex = i;
+        function getDominantFrequency() {
+          analyser.getByteFrequencyData(dataArray);
+          let maxIndex = 0;
+          for (let i = 1; i < bufferLength; i++) {
+            if (dataArray[i] > dataArray[maxIndex]) {
+              maxIndex = i;
+            }
           }
+          const frequency = maxIndex * audioCtx.sampleRate / analyser.fftSize;
+          return frequency;
         }
-        const frequency = maxIndex * audioCtx.sampleRate / analyser.fftSize;
-        return frequency;
-      }
 
-      function frequencyToByte(freq) {
-        const byte = Math.round((freq - 1000) / 15);
-        const expected = 1000 + byte * 15;
-        const diff = Math.abs(freq - expected);
-        return (diff < 7 && byte >= 0 && byte <= 255) ? byte : null;
-      }
+        // This function must accurately reverse the byteToFrequency from the transmitter
+        function frequencyToByte(freq) {
+          const byte = Math.round((freq - 1000) / 15);
+          // Allow for slight deviation due to real-world audio inaccuracies
+          const expected = 1000 + byte * 15;
+          const diff = Math.abs(freq - expected);
+          return (diff < 7 && byte >= 0 && byte <= 255) ? byte : null;
+        }
 
-      function decode() {
-        const freq = getDominantFrequency();
-        const now = performance.now();
+        function decode() {
+          const freq = getDominantFrequency();
+          const now = performance.now();
 
-        // Frame markers
-        if (freq > 9900 && freq < 10050) {
-          if (!receiving) {
-            receiving = true;
-            receivedBytes = [];
-            outputDiv.textContent += "\n[START FRAME]\n";
+          // Frame markers
+          // Start marker frequency: 10000 Hz (expected range 9900-10050)
+          if (freq > 9900 && freq < 10050) {
+            if (!receiving) {
+              receiving = true;
+              receivedBytes = [];
+              outputDiv.textContent += "\n[START FRAME]\n";
+            }
+            return requestAnimationFrame(decode);
+          // End marker frequency: 8900 Hz (expected range 8800-8950)
+          } else if (freq > 8800 && freq < 8950) {
+            if (receiving) {
+              receiving = false;
+              try {
+                const text = new TextDecoder().decode(Uint8Array.from(receivedBytes));
+                outputDiv.textContent += `Received: ${text}\n[END FRAME]\n`;
+              } catch (e) {
+                outputDiv.textContent += `Error decoding: ${e.message}\n[END FRAME]\n`;
+              }
+              receivedBytes = [];
+            }
+            return requestAnimationFrame(decode);
           }
-          return requestAnimationFrame(decode);
-        } else if (freq > 8800 && freq < 8950) {
+
+          // Byte detection (only when actively receiving a frame)
           if (receiving) {
-            receiving = false;
-            const text = new TextDecoder().decode(Uint8Array.from(receivedBytes));
-            outputDiv.textContent += Received: ${text}\n[END FRAME]\n;
-            receivedBytes = [];
+            const byte = frequencyToByte(freq);
+            const timeSinceLast = now - lastByteTime;
+
+            // Only add a byte if it's valid and a sufficient time has passed since the last one
+            // This prevents duplicate readings for a single tone
+            if (byte !== null && timeSinceLast > 200) { // Transmitter sends tones for 100ms with 20ms pause, so 120ms per byte. 200ms gives buffer.
+              receivedBytes.push(byte);
+              lastByteTime = now;
+              // Optional: display raw bytes for debugging
+              // outputDiv.textContent += `Byte: ${byte} Freq: ${freq.toFixed(0)}\n`; 
+            }
           }
-          return requestAnimationFrame(decode);
+
+          requestAnimationFrame(decode);
         }
 
-        // Byte detection
-        if (receiving) {
-          const byte = frequencyToByte(freq);
-          const timeSinceLast = now - lastByteTime;
-
-          if (byte !== null && timeSinceLast > 200) {
-            receivedBytes.push(byte);
-            lastByteTime = now;
-          }
-        }
-
-        requestAnimationFrame(decode);
+        decode(); // Start the decoding loop
+      } catch (err) {
+        outputDiv.textContent = `Error accessing microphone: ${err.message}. Please ensure microphone access is granted.`;
+        console.error("Error accessing microphone:", err);
       }
-
-      decode();
-    }
-  </script>
-</body>
-</html>
-
-
-ChatGPT said:
-Got it! You gave me this full Audio Byte Receiver HTML+JS page that listens to microphone audio, detects frequencies, decodes bytes, and shows decoded text.
-
-You said you want me to update the sender — I assume you mean the transmitter/sender side code that works with this receiver? Or do you want me to improve the receiver?
-
-Could you please clarify:
-
-Do you want me to make or update the sender (transmitter) code that sends those byte frequencies in a matching way?
-
-Or do you want me to improve or fix this receiver?
-
-Or do you want me to connect the receiver and sender somehow?
-
-Just let me know what exactly you want to do next!
-
-
-
-
-
-
-
-
-You said:
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Audio Byte Transmitter</title>
-  <style>
-    body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; }
-    textarea { width: 100%; height: 100px; }
-    button { padding: 10px 20px; font-size: 16px; }
-  </style>
-</head>
-<body>
-  <h1>🔊 Loud Audio Byte Communicator</h1>
-  <p>Enter text to transmit via sound (audible byte frequency modulation):</p>
-  <textarea id="textInput" placeholder="Enter message here..."></textarea><br><br>
-  <button onclick="sendText()">Transmit</button>
-
-  <script>
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-    function playTone(frequency, duration) {
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      oscillator.frequency.value = frequency;
-      oscillator.type = 'sine';
-      gainNode.gain.value = 0.5;
-
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-
-      oscillator.start();
-      oscillator.stop(audioCtx.currentTime + duration / 1000);
-    }
-
-    function byteToFrequency(byte) {
-      return 1000 + byte * 15;  // Map 0-255 to 1000–4845 Hz
-    }
-
-    async function sendBytes(bytes) {
-      for (let byte of bytes) {
-        const freq = byteToFrequency(byte);
-        playTone(freq, 100);
-        await new Promise(resolve => setTimeout(resolve, 120)); // 100ms tone + 20ms pause
-      }
-    }
-
-    function stringToBytes(text) {
-      return new TextEncoder().encode(text);
-    }
-
-    function sendText() {
-      const text = document.getElementById("textInput").value;
-      const bytes = stringToBytes(text);
-      sendBytes(bytes);
     }
   </script>
 </body>
